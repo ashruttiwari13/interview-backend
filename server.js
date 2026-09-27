@@ -42,13 +42,21 @@ If there are no grammar mistakes, return an empty array for grammar_mistakes.`;
     });
 
     const data = await response.json();
+
+    // If Gemini itself returned an error (bad key, bad model name, etc),
+    // log the FULL response so we can see exactly what went wrong.
+    if (!data.candidates || data.candidates.length === 0) {
+      console.error("Gemini did not return candidates. Full response:", JSON.stringify(data));
+      return res.status(500).json({ error: "AI service error", details: data });
+    }
+
     const text = data.candidates[0].content.parts[0].text;
     const clean = text.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(clean);
 
     res.json(parsed);
   } catch (err) {
-    console.error(err);
+    console.error("Server error:", err);
     res.status(500).json({ error: "Failed to get feedback" });
   }
 });
