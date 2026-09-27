@@ -8,7 +8,7 @@ app.use(express.json());
 
 // Set this as an environment variable on Render, NOT hardcoded here.
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`;
 
 app.post("/feedback", async (req, res) => {
   const { field, question, answer } = req.body;
