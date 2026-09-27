@@ -1,13 +1,14 @@
 // server.js
-// A tiny backend that stands between your Android app and the AI.
-// This is what keeps your API key safe (never put it inside the app itself).
+// Backend that talks to Google Gemini (free tier) so the AI key stays hidden
+// from the Android app.
 
 const express = require("express");
 const app = express();
 app.use(express.json());
 
 // Set this as an environment variable on Render, NOT hardcoded here.
-const API_KEY = process.env.ANTHROPIC_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
 app.post("/feedback", async (req, res) => {
   const { field, question, answer } = req.body;
@@ -28,26 +29,20 @@ Respond ONLY with raw JSON, no markdown fences, no preamble, in this exact shape
 }
 If there are no grammar mistakes, return an empty array for grammar_mistakes.`;
 
+  const userPrompt = `Question: "${question}"\n\nCandidate's answer: "${answer}"`;
+
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch(GEMINI_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-        system: systemPrompt,
-        messages: [
-          { role: "user", content: `Question: "${question}"\n\nCandidate's answer: "${answer}"` },
-        ],
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ parts: [{ text: userPrompt }] }],
       }),
     });
 
     const data = await response.json();
-    const text = data.content.map((b) => b.text || "").join("\n");
+    const text = data.candidates[0].content.parts[0].text;
     const clean = text.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(clean);
 
