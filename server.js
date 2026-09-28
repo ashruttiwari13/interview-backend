@@ -1,14 +1,44 @@
 // server.js
 // Backend that talks to Google Gemini (free tier) so the AI key stays hidden
-// from the Android app.
+// from the Android app. Retries automatically when Gemini is temporarily busy.
 
 const express = require("express");
 const app = express();
 app.use(express.json());
 
-// Set this as an environment variable on Render, NOT hardcoded here.
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Calls Gemini, retrying if it says "busy" (503) or "too many requests" (429).
+async function callGeminiWithRetry(body, maxAttempts = 4) {
+  let lastData = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const response = await fetch(GEMINI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+
+    if (data.candidates && data.candidates.length > 0) {
+      return data;
+    }
+
+    lastData = data;
+    const code = data.error && data.error.code;
+    console.error(`Gemini attempt ${attempt}/${maxAttempts} failed:`, JSON.stringify(data));
+
+    // Only retry for temporary problems
+    if ((code === 503 || code === 429) && attempt < maxAttempts) {
+      await sleep(attempt * 3000); // wait 3s, 6s, 9s
+      continue;
+    }
+    break;
+  }
+  return lastData;
+}
 
 app.post("/feedback", async (req, res) => {
   const { field, question, answer } = req.body;
@@ -32,22 +62,14 @@ If there are no grammar mistakes, return an empty array for grammar_mistakes.`;
   const userPrompt = `Question: "${question}"\n\nCandidate's answer: "${answer}"`;
 
   try {
-    const response = await fetch(GEMINI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: userPrompt }] }],
-      }),
+    const data = await callGeminiWithRetry({
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ parts: [{ text: userPrompt }] }],
     });
 
-    const data = await response.json();
-
-    // If Gemini itself returned an error (bad key, bad model name, etc),
-    // log the FULL response so we can see exactly what went wrong.
-    if (!data.candidates || data.candidates.length === 0) {
-      console.error("Gemini did not return candidates. Full response:", JSON.stringify(data));
-      return res.status(500).json({ error: "AI service error", details: data });
+    if (!data || !data.candidates || data.candidates.length === 0) {
+      console.error("Gemini gave no result after retries:", JSON.stringify(data));
+      return res.status(503).json({ error: "AI service busy, please try again" });
     }
 
     const text = data.candidates[0].content.parts[0].text;
