@@ -1,41 +1,61 @@
 // server.js
 // Backend that talks to Google Gemini (free tier) so the AI key stays hidden
-// from the Android app. Retries automatically when Gemini is temporarily busy.
+// from the Android app. If one model is busy or unavailable, it automatically
+// falls back to the next model in the list.
 
 const express = require("express");
 const app = express();
 app.use(express.json());
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+// Tried in this order. If a model is busy (503/429) or not found (404),
+// we move on to the next one.
+const MODELS = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.8-flash",
+  "gemini-3.1-flash-lite",
+];
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Calls Gemini, retrying if it says "busy" (503) or "too many requests" (429).
-async function callGeminiWithRetry(body, maxAttempts = 4) {
+function urlFor(model) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+}
+
+async function callGemini(body) {
   let lastData = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const response = await fetch(GEMINI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await response.json();
 
-    if (data.candidates && data.candidates.length > 0) {
-      return data;
+  for (const model of MODELS) {
+    // 2 attempts per model (only retried when the model says "busy")
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await fetch(urlFor(model), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await response.json();
+
+        if (data.candidates && data.candidates.length > 0) {
+          console.log(`Success with model: ${model}`);
+          return data;
+        }
+
+        lastData = data;
+        const code = data.error && data.error.code;
+        console.error(`[${model}] attempt ${attempt} failed:`, JSON.stringify(data));
+
+        if ((code === 503 || code === 429) && attempt < 2) {
+          await sleep(2000);
+          continue; // retry same model once
+        }
+        break; // go to next model
+      } catch (err) {
+        console.error(`[${model}] network error:`, err.message);
+        break;
+      }
     }
-
-    lastData = data;
-    const code = data.error && data.error.code;
-    console.error(`Gemini attempt ${attempt}/${maxAttempts} failed:`, JSON.stringify(data));
-
-    // Only retry for temporary problems
-    if ((code === 503 || code === 429) && attempt < maxAttempts) {
-      await sleep(attempt * 3000); // wait 3s, 6s, 9s
-      continue;
-    }
-    break;
   }
   return lastData;
 }
@@ -62,13 +82,13 @@ If there are no grammar mistakes, return an empty array for grammar_mistakes.`;
   const userPrompt = `Question: "${question}"\n\nCandidate's answer: "${answer}"`;
 
   try {
-    const data = await callGeminiWithRetry({
+    const data = await callGemini({
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents: [{ parts: [{ text: userPrompt }] }],
     });
 
     if (!data || !data.candidates || data.candidates.length === 0) {
-      console.error("Gemini gave no result after retries:", JSON.stringify(data));
+      console.error("All models failed. Last response:", JSON.stringify(data));
       return res.status(503).json({ error: "AI service busy, please try again" });
     }
 
